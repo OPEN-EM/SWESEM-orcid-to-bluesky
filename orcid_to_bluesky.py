@@ -3,9 +3,10 @@ import time
 import yaml
 import requests
 from datetime import datetime, timedelta, timezone
-from atproto import Client, client_utils  # note client_utils import
+from atproto import Client, client_utils
 
 ORCID_API_BASE = "https://pub.orcid.org/v3.0"
+MAX_CHARS = 300
 
 
 def load_config():
@@ -45,7 +46,7 @@ def fetch_orcid_name(orcid_id: str) -> str:
     return full_name
 
 
-def fetch_works(orcid_id):
+def fetch_works(orcid_id: str):
     url = f"{ORCID_API_BASE}/{orcid_id}/works"
     headers = {"Accept": "application/vnd.orcid+json"}
     print(f"Requesting ORCID works for {orcid_id}: {url}")
@@ -57,7 +58,7 @@ def fetch_works(orcid_id):
     return groups
 
 
-def filter_recent(groups, days):
+def filter_recent(groups, days: int):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     print(f"  Filtering works with last-modified-date >= {cutoff.isoformat()}")
     results = []
@@ -98,6 +99,68 @@ def filter_recent(groups, days):
     return sorted(results, key=lambda x: x["date"], reverse=True)
 
 
+def build_post_builder(author_name: str,
+                       orcid_profile_url: str,
+                       title: str,
+                       doi_url: str | None,
+                       hashtags: list[str]):
+    """
+    Build a Bluesky post with links and tags, truncating the title if needed
+    to stay within MAX_CHARS characters.
+    """
+
+    def make_builder(current_title: str):
+        b = client_utils.TextBuilder()
+
+        # Name line, with ORCID link
+        b.text("New paper from ")
+        b.link(author_name, orcid_profile_url)
+
+        # Title
+        b.text("\n" + current_title)
+
+        # DOI line
+        if doi_url:
+            b.text("\n")
+            b.link(doi_url, doi_url)
+
+        # Hashtags line
+        if hashtags:
+            b.text("\n")
+            for i, tag in enumerate(hashtags):
+                clean = tag.lstrip("#")
+                visible = "#" + clean
+                if i < len(hashtags) - 1:
+                    visible += " "
+                b.tag(visible, clean)
+
+        return b
+
+    # First try with full title
+    builder = make_builder(title)
+    text = builder.build_text()
+    if len(text) <= MAX_CHARS:
+        return builder
+
+    # If too long, compute how much room we have for the title
+    overhead = len(text) - len(title)  # everything except the title
+    allowed = MAX_CHARS - overhead - 1  # minus 1 for ellipsis
+
+    if allowed <= 0:
+        allowed = 1
+
+    short = title[:allowed]
+    # Avoid cutting in the middle of a word if possible
+    if " " in short:
+        short = short.rsplit(" ", 1)[0]
+    short = short + "…"
+
+    builder = make_builder(short)
+    text2 = builder.build_text()
+    print(f"  Truncated title, final length {len(text2)} characters")
+    return builder
+
+
 def main():
     cfg = load_config()
 
@@ -113,11 +176,11 @@ def main():
     client = Client()
     client.login(handle, app_pw)
 
-    max_posts = cfg.get("max_posts_total", 5)
+    max_posts = int(cfg.get("max_posts_total", 5))
     posted = 0
 
     # Cache ORCID → name within a single run
-    name_cache = {}
+    name_cache: dict[str, str] = {}
 
     for oid in cfg["orcid_ids"]:
         if posted >= max_posts:
@@ -133,7 +196,7 @@ def main():
         orcid_profile_url = f"https://orcid.org/{oid}"
 
         groups = fetch_works(oid)
-        items = filter_recent(groups, cfg["days_back"])
+        items = filter_recent(groups, int(cfg["days_back"]))
 
         if not items:
             print(f"  No recent works for {oid}")
@@ -143,36 +206,21 @@ def main():
             if posted >= max_posts:
                 break
 
-            builder = client_utils.TextBuilder()
-
-            # First line: name as a clickable link to ORCID profile
-            builder.text("New paper from ")
-            builder.link(author_name, orcid_profile_url)
-
-            # Title on next line (plain text)
-            builder.text("\n" + item["title"])
-
-            # DOI link on separate line, clickable
-            if item["url"]:
-                builder.text("\n")
-                # visible text = URL, link target = URL
-                builder.link(item["url"], item["url"])
-
-            # Hashtags on final line, each as a real tag facet
-            if hashtags:
-                builder.text("\n")
-                for i, tag in enumerate(hashtags):
-                    clean_tag = tag.lstrip("#")
-                    visible = "#" + clean_tag
-                    # include a trailing space except after the last tag
-                    if i < len(hashtags) - 1:
-                        visible += " "
-                    builder.tag(visible, clean_tag)
+            builder = build_post_builder(
+                author_name=author_name,
+                orcid_profile_url=orcid_profile_url,
+                title=item["title"],
+                doi_url=item["url"],
+                hashtags=hashtags,
+            )
 
             text_preview = builder.build_text()
-            print("  Posting (preview):", text_preview.replace("\n", " | "))
+            print(
+                "  Posting (preview):",
+                text_preview.replace("\n", " | "),
+                f"({len(text_preview)} chars)",
+            )
 
-            # You can pass TextBuilder directly; client will add facets
             client.send_post(builder)
 
             posted += 1
