@@ -3,7 +3,7 @@ import time
 import yaml
 import requests
 from datetime import datetime, timedelta, timezone
-from atproto import Client
+from atproto import Client, client_utils  # note client_utils import
 
 ORCID_API_BASE = "https://pub.orcid.org/v3.0"
 
@@ -106,6 +106,9 @@ def main():
     if not handle or not app_pw:
         raise RuntimeError("BLUESKY_HANDLE or BLUESKY_APP_PASSWORD not set")
 
+    hashtags = cfg.get("hashtags", [])
+    print("Using hashtags:", hashtags)
+
     print("Logging in to Bluesky as", handle)
     client = Client()
     client.login(handle, app_pw)
@@ -113,7 +116,7 @@ def main():
     max_posts = cfg.get("max_posts_total", 5)
     posted = 0
 
-    # Optional small in-memory cache so we only look up each ORCID name once per run
+    # Cache ORCID → name within a single run
     name_cache = {}
 
     for oid in cfg["orcid_ids"]:
@@ -121,10 +124,12 @@ def main():
             break
 
         print(f"\n=== Checking {oid} ===")
-        # resolve name from ORCID
+
+        # Resolve human name from ORCID
         if oid not in name_cache:
             name_cache[oid] = fetch_orcid_name(oid)
         author_name = name_cache[oid]
+
         orcid_profile_url = f"https://orcid.org/{oid}"
 
         groups = fetch_works(oid)
@@ -138,15 +143,38 @@ def main():
             if posted >= max_posts:
                 break
 
-            # Build the Bluesky post text
-            # Name + ORCID profile URL (clickable)
-            text = f"New paper from {author_name} (ORCID: {orcid_profile_url})\n{item['title']}"
-            # DOI link (clickable)
-            if item["url"]:
-                text += f"\n{item['url']}"
+            builder = client_utils.TextBuilder()
 
-            print("  Posting:", text.replace("\n", " | "))
-            client.send_post(text)
+            # First line: name as a clickable link to ORCID profile
+            builder.text("New paper from ")
+            builder.link(author_name, orcid_profile_url)
+
+            # Title on next line (plain text)
+            builder.text("\n" + item["title"])
+
+            # DOI link on separate line, clickable
+            if item["url"]:
+                builder.text("\n")
+                # visible text = URL, link target = URL
+                builder.link(item["url"], item["url"])
+
+            # Hashtags on final line, each as a real tag facet
+            if hashtags:
+                builder.text("\n")
+                for i, tag in enumerate(hashtags):
+                    clean_tag = tag.lstrip("#")
+                    visible = "#" + clean_tag
+                    # include a trailing space except after the last tag
+                    if i < len(hashtags) - 1:
+                        visible += " "
+                    builder.tag(visible, clean_tag)
+
+            text_preview = builder.build_text()
+            print("  Posting (preview):", text_preview.replace("\n", " | "))
+
+            # You can pass TextBuilder directly; client will add facets
+            client.send_post(builder)
+
             posted += 1
             time.sleep(1)
 
