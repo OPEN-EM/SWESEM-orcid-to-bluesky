@@ -59,17 +59,24 @@ def fetch_works(orcid_id: str):
 
 
 def filter_recent(groups, days: int):
+    """
+    Keep works whose CREATED date is within the last `days`.
+    Fall back to last-modified-date only if created-date is missing.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    print(f"  Filtering works with last-modified-date >= {cutoff.isoformat()}")
+    print(f"  Filtering works with created-date >= {cutoff.isoformat()}")
     results = []
 
     for g in groups:
         for ws in g.get("work-summary", []) or []:
-            ts = ws.get("last-modified-date", {}).get("value")
-            if not ts:
+            created_ts = ws.get("created-date", {}).get("value")
+            modified_ts = ws.get("last-modified-date", {}).get("value")
+
+            ts_to_use = created_ts or modified_ts
+            if not ts_to_use:
                 continue
 
-            dt = datetime.fromtimestamp(int(ts) / 1000, tz=timezone.utc)
+            dt = datetime.fromtimestamp(int(ts_to_use) / 1000, tz=timezone.utc)
             if dt < cutoff:
                 continue
 
@@ -92,18 +99,26 @@ def filter_recent(groups, days: int):
                         url = "https://doi.org/" + val
                         break
 
-            results.append({"title": title, "url": url, "date": dt})
+            results.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "date": dt,
+                }
+            )
 
-    print(f"  Found {len(results)} works after filtering")
-    # newest first
+    print(f"  Found {len(results)} works after filtering by created-date")
+    # newest first by created-date
     return sorted(results, key=lambda x: x["date"], reverse=True)
 
 
-def build_post_builder(author_name: str,
-                       orcid_profile_url: str,
-                       title: str,
-                       doi_url: str | None,
-                       hashtags: list[str]):
+def build_post_builder(
+    author_name: str,
+    orcid_profile_url: str,
+    title: str,
+    doi_url: str | None,
+    hashtags: list[str],
+):
     """
     Build a Bluesky post with links and tags, truncating the title if needed
     to stay within MAX_CHARS characters.
@@ -188,7 +203,6 @@ def main():
 
         print(f"\n=== Checking {oid} ===")
 
-        # Resolve human name from ORCID
         if oid not in name_cache:
             name_cache[oid] = fetch_orcid_name(oid)
         author_name = name_cache[oid]
