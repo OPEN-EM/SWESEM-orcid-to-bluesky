@@ -1,10 +1,12 @@
 orcid_ids:
   - "0000-0001-7553-7337" # Johanna Berg
   - "0000-0002-0549-6805" # Jens Wretborn
+  - "0009-0004-6273-5106" # Olof Fager Bengtsson
 
-days_back: 10
-max_posts_total: 2
+days_back: 1
+max_posts_total: 10
 
 hashtags:
-  - "#MedSky"
+  - "#EMResearch"
+  - "#SWESEM"
   - "#AcademicSky"
