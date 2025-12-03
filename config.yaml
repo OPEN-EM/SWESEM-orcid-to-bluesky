@@ -1,5 +1,6 @@
 orcid_ids:
-  - "0000-0001-7553-7337"
+  - "0000-0001-7553-7337" # Johanna Berg
+  - "0000-0002-0549-6805" # Jens Wretborn
 
 days_back: 10
 max_posts_total: 2
